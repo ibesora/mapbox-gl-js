@@ -13,11 +13,10 @@ body { margin: 0; padding: 0; }
 </head>
 <body>
 <div id="map"></div>
-<script>
-	// TO MAKE THE MAP APPEAR YOU MUST
-	// ADD YOUR ACCESS TOKEN FROM
-	// https://account.mapbox.com
-	mapboxgl.accessToken = 'pk.eyJ1IjoiaWJlc29yYSIsImEiOiJjbTI5YWMxcjIwNDB0MmtyMTIzbXRmdmJjIn0.MZaG62HYHQckcXGVlM039A';
+<script type="module">
+  import { kml } from "https://unpkg.com/@tmcw/togeojson?module";
+
+    mapboxgl.accessToken = 'pk.eyJ1IjoiaWJlc29yYSIsImEiOiJjbTI5YWMxcjIwNDB0MmtyMTIzbXRmdmJjIn0.MZaG62HYHQckcXGVlM039A';
     const map = new mapboxgl.Map({
         container: 'map',
         zoom: 3,
@@ -25,101 +24,8 @@ body { margin: 0; padding: 0; }
         // Choose from Mapbox's core styles, or make your own style with Mapbox Studio
         style: 'mapbox://styles/mapbox/light-v11',
         antialias: true, // create the gl context with MSAA antialiasing, so custom layers are antialiased
-        projection: 'mercator'
-    });
-
-    // create a custom style layer to implement the WebGL content
-    const highlightLayer = {
-        id: 'highlight',
-        type: 'custom',
-
-        // method called when the layer is added to the map
-        // https://docs.mapbox.com/mapbox-gl-js/api/#styleimageinterface#onadd
-        onAdd: function (map, gl) {
-            // create GLSL source for vertex shader
-            const vertexSource = `
-                uniform mat4 u_matrix;
-                attribute vec2 a_pos;
-                void main() {
-                    gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
-                }`;
-
-            // create GLSL source for fragment shader
-            const fragmentSource = `
-                void main() {
-                    gl_FragColor = vec4(1.0, 0.0, 0.0, 0.5);
-                }`;
-
-            // create a vertex shader
-            const vertexShader = gl.createShader(gl.VERTEX_SHADER);
-            gl.shaderSource(vertexShader, vertexSource);
-            gl.compileShader(vertexShader);
-
-            // create a fragment shader
-            const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
-            gl.shaderSource(fragmentShader, fragmentSource);
-            gl.compileShader(fragmentShader);
-
-            // link the two shaders into a WebGL program
-            this.program = gl.createProgram();
-            gl.attachShader(this.program, vertexShader);
-            gl.attachShader(this.program, fragmentShader);
-            gl.linkProgram(this.program);
-
-            this.aPos = gl.getAttribLocation(this.program, 'a_pos');
-
-            // define vertices of the triangle to be rendered in the custom style layer
-            const helsinki = mapboxgl.MercatorCoordinate.fromLngLat({
-                lng: 25.004,
-                lat: 60.239
-            });
-            const berlin = mapboxgl.MercatorCoordinate.fromLngLat({
-                lng: 13.403,
-                lat: 52.562
-            });
-            const kyiv = mapboxgl.MercatorCoordinate.fromLngLat({
-                lng: 30.498,
-                lat: 50.541
-            });
-
-            // create and initialize a WebGLBuffer to store vertex and color data
-            this.buffer = gl.createBuffer();
-            gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-            gl.bufferData(
-                gl.ARRAY_BUFFER,
-                new Float32Array([
-                    helsinki.x,
-                    helsinki.y,
-                    berlin.x,
-                    berlin.y,
-                    kyiv.x,
-                    kyiv.y
-                ]),
-                gl.STATIC_DRAW
-            );
-        },
-
-        // method fired on each animation frame
-        // https://docs.mapbox.com/mapbox-gl-js/api/#map.event:render
-        render: function (gl, matrix) {
-            gl.useProgram(this.program);
-            gl.uniformMatrix4fv(
-                gl.getUniformLocation(this.program, 'u_matrix'),
-                false,
-                matrix
-            );
-            gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-            gl.enableVertexAttribArray(this.aPos);
-            gl.vertexAttribPointer(this.aPos, 2, gl.FLOAT, false, 0, 0);
-            gl.enable(gl.BLEND);
-            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 3);
-        }
-    };
-
-    // add the custom style layer to the map
-    map.on('load', () => {
-        map.addLayer(highlightLayer, 'building');
+        projection: 'mercator',
+        hash: true
     });
 
     // Add the terrain layer
@@ -133,6 +39,95 @@ body { margin: 0; padding: 0; }
         // add the DEM source as a terrain layer with exaggerated height
         map.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.0 });
     });
+
+    map.on('load', () => {
+        fetch("drone.kml")
+            .then(function (response) {
+                return response.text();
+            })
+            .then(function (xml) {
+              addCustomLayer(kml(new DOMParser().parseFromString(xml, "text/xml")));
+            })
+    })
+
+    function addCustomLayer(featureCollection) {
+
+        // create a custom style layer to implement the WebGL content
+        const customLayer = {
+            id: 'highlight',
+            type: 'custom',
+
+            // method called when the layer is added to the map
+            // https://docs.mapbox.com/mapbox-gl-js/api/#styleimageinterface#onadd
+            onAdd: function (map, gl) {
+                // create GLSL source for vertex shader
+                const vertexSource = `
+                    uniform mat4 u_matrix;
+                    attribute vec3 a_pos;
+                    void main() {
+                        gl_Position = u_matrix * vec4(a_pos, 1.0);
+                    }`;
+
+                // create GLSL source for fragment shader
+                const fragmentSource = `
+                    void main() {
+                        gl_FragColor = vec4(1.0, 0.0, 0.0, 0.5);
+                    }`;
+
+                // create a vertex shader
+                const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+                gl.shaderSource(vertexShader, vertexSource);
+                gl.compileShader(vertexShader);
+
+                // create a fragment shader
+                const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+                gl.shaderSource(fragmentShader, fragmentSource);
+                gl.compileShader(fragmentShader);
+
+                // link the two shaders into a WebGL program
+                this.program = gl.createProgram();
+                gl.attachShader(this.program, vertexShader);
+                gl.attachShader(this.program, fragmentShader);
+                gl.linkProgram(this.program);
+
+                this.aPos = gl.getAttribLocation(this.program, 'a_pos');
+
+                // create line vertices
+                const bufferArray = featureCollection.features.map((feature) => {
+                    if (!feature.geometry) return [];
+                    if (feature.geometry.type !== 'LineString') return [];
+                    if (!feature.geometry.coordinates) return [];
+                    return feature.geometry.coordinates;
+                }).flat(Infinity);
+
+                // create and initialize a WebGLBuffer to store vertex and color data
+                this.buffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+                gl.bufferData(
+                    gl.ARRAY_BUFFER,
+                    new Float32Array(bufferArray),
+                    gl.STATIC_DRAW
+                );
+            },
+
+            // method fired on each animation frame
+            // https://docs.mapbox.com/mapbox-gl-js/api/#map.event:render
+            render: function (gl, matrix) {
+                gl.useProgram(this.program);
+                gl.uniformMatrix4fv(
+                    gl.getUniformLocation(this.program, 'u_matrix'),
+                    false,
+                    matrix
+                );
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+                gl.enableVertexAttribArray(this.aPos);
+                gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
+                gl.drawArrays(gl.LINE_STRIP, 0, bufferArray.length / 3);
+            }
+        };
+
+        map.addLayer(customLayer, 'building');
+    }
 </script>
 
 </body>
