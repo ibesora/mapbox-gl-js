@@ -25,7 +25,7 @@ body { margin: 0; padding: 0; }
         style: 'mapbox://styles/mapbox/light-v11',
         antialias: true, // create the gl context with MSAA antialiasing, so custom layers are antialiased
         projection: 'mercator',
-        hash: true
+        hash: true // #14.28/46.94721/8.71206
     });
 
     // Add the terrain layer
@@ -79,16 +79,34 @@ body { margin: 0; padding: 0; }
                 gl.shaderSource(vertexShader, vertexSource);
                 gl.compileShader(vertexShader);
 
+                if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+                    const error = gl.getShaderInfoLog(vertexShader);
+                    console.log(error);
+                    throw new Error(`Could not compile vertex shader: ${error}`);
+                }
+
                 // create a fragment shader
                 const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
                 gl.shaderSource(fragmentShader, fragmentSource);
                 gl.compileShader(fragmentShader);
+
+                if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+                    const error = gl.getShaderInfoLog(fragmentShader);
+                    console.log(error);
+                    throw new Error(`Could not compile fragment shader: ${error}`);
+                }
 
                 // link the two shaders into a WebGL program
                 this.program = gl.createProgram();
                 gl.attachShader(this.program, vertexShader);
                 gl.attachShader(this.program, fragmentShader);
                 gl.linkProgram(this.program);
+
+                if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) {
+                    const error = gl.getProgramInfoLog(this.program);
+                    console.log(error);
+                    throw new Error(`Program failed to link: ${error}`);
+                }
 
                 this.aPos = gl.getAttribLocation(this.program, 'a_pos');
 
@@ -97,11 +115,18 @@ body { margin: 0; padding: 0; }
                     if (!feature.geometry) return [];
                     if (feature.geometry.type !== 'LineString') return [];
                     if (!feature.geometry.coordinates) return [];
-                    return feature.geometry.coordinates;
+                    return feature.geometry.coordinates.map((coord) => {
+                        const mercatorCoordinates =  mapboxgl.MercatorCoordinate.fromLngLat({
+                            lng: coord[0],
+                            lat: coord[1],
+                        }, coord[2] || 0);
+                        return [mercatorCoordinates.x, mercatorCoordinates.y, mercatorCoordinates.z];
+                    });
                 }).flat(Infinity);
 
                 // create and initialize a WebGLBuffer to store vertex and color data
                 this.buffer = gl.createBuffer();
+                this.elementNum = bufferArray.length / 3;
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
                 gl.bufferData(
                     gl.ARRAY_BUFFER,
@@ -122,7 +147,9 @@ body { margin: 0; padding: 0; }
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
                 gl.enableVertexAttribArray(this.aPos);
                 gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
-                gl.drawArrays(gl.LINE_STRIP, 0, bufferArray.length / 3);
+                gl.enable(gl.BLEND);
+                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+                gl.drawArrays(gl.LINE_STRIP, 0, this.elementNum);
             }
         };
 
