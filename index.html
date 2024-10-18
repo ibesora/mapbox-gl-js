@@ -22,10 +22,10 @@ body { margin: 0; padding: 0; }
         zoom: 3,
         center: [7.5, 58],
         // Choose from Mapbox's core styles, or make your own style with Mapbox Studio
-        style: 'mapbox://styles/mapbox/light-v11',
+        style: 'mapbox://styles/mapbox/standard-satellite',
         antialias: true, // create the gl context with MSAA antialiasing, so custom layers are antialiased
         projection: 'mercator',
-        hash: true // #14.28/46.94721/8.71206
+        hash: true, // #14.28/46.94721/8.71206,
     });
 
     // Add the terrain layer
@@ -56,6 +56,7 @@ body { margin: 0; padding: 0; }
         const customLayer = {
             id: 'highlight',
             type: 'custom',
+            renderingMode: '3d',
 
             // method called when the layer is added to the map
             // https://docs.mapbox.com/mapbox-gl-js/api/#styleimageinterface#onadd
@@ -153,7 +154,7 @@ body { margin: 0; padding: 0; }
             }
         };
 
-        map.addLayer(customLayer, 'building');
+        map.addLayer(customLayer);
     }
 </script>
 
