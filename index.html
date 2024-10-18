@@ -6,6 +6,7 @@
 <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
 <link href="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.css" rel="stylesheet">
 <script src="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.js"></script>
+<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
 <style>
 body { margin: 0; padding: 0; }
 #map { position: absolute; top: 0; bottom: 0; width: 100%; }
@@ -46,11 +47,33 @@ body { margin: 0; padding: 0; }
                 return response.text();
             })
             .then(function (xml) {
-              addCustomLayer(kml(new DOMParser().parseFromString(xml, "text/xml")));
+              const featureCollection = kml(new DOMParser().parseFromString(xml, "text/xml"));
+              const { route, mercatorRoute } = convertToMercator(featureCollection);
+              addCustomLayer(mercatorRoute.flat(Infinity));
+              resetRouteData(route.flat(1));
+              addKeyboardEvents();
             })
     })
 
-    function addCustomLayer(featureCollection) {
+    function convertToMercator(featureCollection) {
+        const mercatorRoute = [];
+        const route = featureCollection.features.map((feature) => {
+            if (!feature.geometry) return [];
+            if (feature.geometry.type !== 'LineString') return [];
+            if (!feature.geometry.coordinates) return [];
+            return feature.geometry.coordinates.map((coord) => {
+                const mercatorCoordinates =  mapboxgl.MercatorCoordinate.fromLngLat({
+                    lng: coord[0],
+                    lat: coord[1],
+                }, coord[2] || 0);
+                mercatorRoute.push([mercatorCoordinates.x, mercatorCoordinates.y, mercatorCoordinates.z]);
+                return [coord[0], coord[1], coord[2] || 0];
+            });
+        });
+        return { route, mercatorRoute }
+    }
+
+    function addCustomLayer(route) {
 
         // create a custom style layer to implement the WebGL content
         const customLayer = {
@@ -72,7 +95,7 @@ body { margin: 0; padding: 0; }
                 // create GLSL source for fragment shader
                 const fragmentSource = `
                     void main() {
-                        gl_FragColor = vec4(1.0, 0.0, 0.0, 0.5);
+                        gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
                     }`;
 
                 // create a vertex shader
@@ -111,27 +134,13 @@ body { margin: 0; padding: 0; }
 
                 this.aPos = gl.getAttribLocation(this.program, 'a_pos');
 
-                // create line vertices
-                const bufferArray = featureCollection.features.map((feature) => {
-                    if (!feature.geometry) return [];
-                    if (feature.geometry.type !== 'LineString') return [];
-                    if (!feature.geometry.coordinates) return [];
-                    return feature.geometry.coordinates.map((coord) => {
-                        const mercatorCoordinates =  mapboxgl.MercatorCoordinate.fromLngLat({
-                            lng: coord[0],
-                            lat: coord[1],
-                        }, coord[2] || 0);
-                        return [mercatorCoordinates.x, mercatorCoordinates.y, mercatorCoordinates.z];
-                    });
-                }).flat(Infinity);
-
                 // create and initialize a WebGLBuffer to store vertex and color data
                 this.buffer = gl.createBuffer();
-                this.elementNum = bufferArray.length / 3;
+                this.elementNum = route.length / 3;
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
                 gl.bufferData(
                     gl.ARRAY_BUFFER,
-                    new Float32Array(bufferArray),
+                    new Float32Array(route),
                     gl.STATIC_DRAW
                 );
             },
@@ -148,13 +157,129 @@ body { margin: 0; padding: 0; }
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
                 gl.enableVertexAttribArray(this.aPos);
                 gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
-                gl.enable(gl.BLEND);
-                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
                 gl.drawArrays(gl.LINE_STRIP, 0, this.elementNum);
             }
         };
 
         map.addLayer(customLayer);
+    }
+
+    const routeData = {
+      lineString: undefined,
+      routeDistance: undefined
+    }
+
+    const animationData = {
+      secondsPerKm: 3,
+      altitudeOffsetInMeters: 200,
+      followAlongDistanceInKm: 0.2,
+      durationInMillis: undefined,
+      start: undefined,
+      request: undefined,
+      cameraPositions: undefined,
+      isStoringCameraPositions: true,
+      isPlaying: false
+    }
+
+    function resetRouteData(route) {
+      routeData.lineString = turf.lineString(route);
+      routeData.routeDistance = turf.lineDistance(routeData.lineString);
+    }
+
+    function resetAnimationData() {
+        animationData.start = undefined;
+        const secondsPerKm = 10.0;
+        animationData.durationInMillis = routeData.routeDistance * animationData.secondsPerKm * 1000;
+        animationData.isPlaying = false;
+        animationData.isStoringCameraPositions = true;
+        animationData.cameraPositions = [];
+    }
+
+    function addKeyboardEvents() {
+        document.addEventListener('keypress', (e) => {
+            if (e.code === "Space") toggleCameraAnimation();
+        });
+    }
+
+    function toggleCameraAnimation() {
+        if (!animationData.isPlaying) {
+            resetAnimationData();
+            animationData.request = window.requestAnimationFrame(nextFrame);
+        }
+        else {
+            animationData.isPlaying = false;
+            window.cancelAnimationFrame(animationData.request);
+        }
+    }
+
+    function nextFrame(time) {
+        if (!animationData.isPlaying) {
+            animationData.isPlaying = true;
+            animationData.start = time;
+        }
+        const { start, durationInMillis } = animationData;
+        const phase = (time - start) / durationInMillis;
+        if (phase > 1.0) {
+          animationData.isPlaying = false;
+          animationData.lastCameraPosition = undefined;
+          return;
+        }
+
+        const lookAtWithAltitude = along(routeData.lineString, routeData.routeDistance * phase);
+
+        animationData.cameraPositions.push(lookAtWithAltitude);
+        if (animationData.isStoringCameraPositions) {
+          const distance = turf.distance(
+            turf.point(animationData.cameraPositions[0]),
+            turf.point(lookAtWithAltitude)
+          );
+          animationData.isStoringCameraPositions = distance < animationData.followAlongDistanceInKm;
+        } else {
+          animationData.cameraPositions.shift();
+        }
+
+        const camera = map.getFreeCameraOptions();
+        camera.position = mapboxgl.MercatorCoordinate.fromLngLat(
+            {
+                lng: animationData.cameraPositions[0][0],
+                lat: animationData.cameraPositions[0][1]
+            },
+            animationData.altitudeOffsetInMeters + (animationData.cameraPositions[0][2] || 0)
+        );
+
+        // Why doesn't camera.lookAtPoint support altitude?
+        camera.lookAtPoint(
+            {
+                lng: lookAtWithAltitude[0],
+                lat: lookAtWithAltitude[1]
+            }
+        );
+
+        map.setFreeCameraOptions(camera);
+
+        animationData.request = window.requestAnimationFrame(nextFrame);
+    }
+
+    function along(lineString, distance) {
+        // Unfortunately turf.along does not support coordinates with altitude so we implement our own
+        // Using turf.along for the horizontal distance and then linear interpolation for the altitude
+        const coords = lineString.geometry.coordinates;
+        let travelled = 0;
+        for (let i = 0; i < coords.length - 1; i++) {
+          const segment = turf.lineString([coords[i], coords[i + 1]]);
+          const segmentDistance = turf.length(segment, { units: 'kilometers' });
+          if (travelled + segmentDistance >= distance) {
+            const overshotDistance = distance - travelled;
+            const finalCoords = turf.along(segment, overshotDistance, { units: 'kilometers' }).geometry.coordinates;
+            const finalHeight = lerp(coords[i][2] || 0, coords[i + 1][2] || 0, overshotDistance / segmentDistance);
+            return [finalCoords[0], finalCoords[1], finalHeight];
+          }
+          travelled += segmentDistance;
+        }
+    }
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
     }
 </script>
 
