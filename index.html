@@ -49,7 +49,9 @@ body { margin: 0; padding: 0; }
             .then(function (xml) {
               const featureCollection = kml(new DOMParser().parseFromString(xml, "text/xml"));
               const { route, mercatorRoute } = convertToMercator(featureCollection);
-              addCustomLayer(mercatorRoute.flat(Infinity));
+              const flatMercatorRoute = mercatorRoute.flat(Infinity);
+              const attributes = createVertexAttributes(flatMercatorRoute);
+              addCustomLayer(attributes, flatMercatorRoute.length);
               resetRouteData(route.flat(1));
               addKeyboardEvents();
             })
@@ -73,7 +75,46 @@ body { margin: 0; padding: 0; }
         return { route, mercatorRoute }
     }
 
-    function addCustomLayer(route) {
+    function createVertexAttributes(route) {
+        const bytesPerVertex = 37 // 4 bytes per coordinate + 1 byte per normal direction + 4 per previous vertex coordinate + 4 per next vertex coordinate
+        const verticesPerPoint = 2;
+        const buffer = new ArrayBuffer(
+          bytesPerVertex * verticesPerPoint * route.length,
+        );
+        
+        const dv = new DataView(buffer);
+        route.forEach((currentVertex, i) => {
+            const vertexOffset = i * bytesPerVertex * verticesPerPoint;
+            const previousVertex = route[i - 1] || route[i];
+            const nextVertex = route[i + 1] || route[i];
+            addVertex(dv, vertexOffset, currentVertex[0], currentVertex[1], currentVertex[2], true, previousVertex[0], previousVertex[1], previousVertex[2], nextVertex[0], nextVertex[1], nextVertex[2]);
+            addVertex(dv, vertexOffset + bytesPerVertex, currentVertex[0], currentVertex[1], currentVertex[2], false, previousVertex[0], previousVertex[1], previousVertex[2], nextVertex[0], nextVertex[1], nextVertex[2]);
+        });
+
+        return buffer;
+    }
+
+    function addVertex(
+        dv,
+        vertexOffset,
+        currentX, currentY, currentZ,
+        normalDirection,
+        previousX, previousY, previousZ,
+        nextX, nextY, nextZ
+    ) {
+        dv.setFloat32(vertexOffset, currentX, true);
+        dv.setFloat32(vertexOffset + 4, currentY, true);
+        dv.setFloat32(vertexOffset + 8, currentZ, true);
+        dv.setUint8(vertexOffset + 12, normalDirection ? 1 : 0);
+        dv.setFloat32(vertexOffset + 13, previousX, true);
+        dv.setFloat32(vertexOffset + 17, previousY, true);
+        dv.setFloat32(vertexOffset + 21, previousZ, true);
+        dv.setFloat32(vertexOffset + 25, nextX, true);
+        dv.setFloat32(vertexOffset + 29, nextY, true);
+        dv.setFloat32(vertexOffset + 33, nextZ, true);
+    }
+
+    function addCustomLayer(attributes, numPoints) {
 
         // create a custom style layer to implement the WebGL content
         const customLayer = {
@@ -87,7 +128,12 @@ body { margin: 0; padding: 0; }
                 // create GLSL source for vertex shader
                 const vertexSource = `
                     uniform mat4 u_matrix;
+                    uniform float aspectRatio;
+                    uniform float thickness;
                     attribute vec3 a_pos;
+                    attribute vec3 next;
+                    attribute vec3 prev;
+                    attribute bool positiveNormal;
                     void main() {
                         gl_Position = u_matrix * vec4(a_pos, 1.0);
                     }`;
@@ -136,7 +182,7 @@ body { margin: 0; padding: 0; }
 
                 // create and initialize a WebGLBuffer to store vertex and color data
                 this.buffer = gl.createBuffer();
-                this.elementNum = route.length / 3;
+                this.elementNum = numPoints * 2;
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
                 gl.bufferData(
                     gl.ARRAY_BUFFER,
@@ -156,8 +202,14 @@ body { margin: 0; padding: 0; }
                 );
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
                 gl.enableVertexAttribArray(this.aPos);
-                gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
-                gl.drawArrays(gl.LINE_STRIP, 0, this.elementNum);
+                gl.enableVertexAttribArray(this.normalDirection);
+                gl.enableVertexAttribArray(this.previousVertex);
+                gl.enableVertexAttribArray(this.nextVertex);
+                gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 37, 0);
+                gl.vertexAttribPointer(this.normalDirection, 1, gl.UNSIGNED_BYTE, false, 37, 12);
+                gl.vertexAttribPointer(this.previousVertex, 3, gl.FLOAT, false, 37, 13);
+                gl.vertexAttribPointer(this.nextVertex, 3, gl.FLOAT, false, 37, 25);
+                gl.drawArrays(gl.TRIANGLES, 0, this.elementNum);
             }
         };
 
